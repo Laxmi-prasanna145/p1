@@ -2,102 +2,98 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as iogo
+import plotly.graph_objects as go
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.decomposition import PCA
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Customer Segmenter AI", layout="wide")
+st.set_page_config(page_title="Customer Segmenter Pro", layout="wide")
 
-# --- MOCK LOGIN ---
-if 'logged_in' not in st.session_state:
-    st.session_state['logged_in'] = False
+# --- LOGIN LOGIC ---
+if 'auth' not in st.session_state:
+    st.session_state.auth = False
 
-def login_page():
-    st.title("🔐 Business Analyst Portal")
-    with st.form("login_form"):
-        user = st.text_input("Username")
-        pw = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login")
-        if submit:
-            if user == "admin" and pw == "password123": # Simple mock check
-                st.session_state['logged_in'] = True
-                st.rerun()
-            else:
-                st.error("Invalid credentials")
+if not st.session_state.auth:
+    st.title("🔐 Business Analyst Login")
+    user = st.text_input("Username")
+    pw = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if user == "admin" and pw == "admin123":
+            st.session_state.auth = True
+            st.rerun()
+        else:
+            st.error("Invalid Credentials")
+    st.stop() # Prevents the rest of the app from running until login
 
-# --- MAIN APP ---
-def main_app():
-    st.sidebar.title("Navigation")
-    if st.sidebar.button("Logout"):
-        st.session_state['logged_in'] = False
-        st.rerun()
+# --- MAIN DASHBOARD ---
+st.title("📊 Customer Segmentation AI")
 
-    st.title("📊 Customer Segmentation Dashboard")
-    st.info("Upload your CSV dataset to begin automatic clustering.")
+uploaded_file = st.file_uploader("Upload your CSV dataset", type=["csv"])
 
-    uploaded_file = st.file_uploader("Upload Customer Dataset", type=["csv"])
+if uploaded_file is not None:
+    # 1. Load Data
+    df = pd.read_csv(uploaded_file)
+    
+    # 2. Automated Preprocessing
+    # We drop ID-like columns and handle strings
+    df_numeric = df.select_dtypes(include=[np.number]).drop(columns=['CustomerID'], errors='ignore')
+    
+    # If Gender exists, encode it
+    if 'Gender' in df.columns:
+        le = LabelEncoder()
+        df_numeric['Gender'] = le.fit_transform(df['Gender'])
 
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        st.write("### Data Preview", df.head())
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(df_numeric)
 
-        # --- PREPROCESSING ---
-        # 1. Select numeric features automatically
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        if 'CustomerID' in numeric_cols: numeric_cols.remove('CustomerID')
+    # 3. Sidebar Controls
+    st.sidebar.header("Model Settings")
+    k = st.sidebar.slider("Number of Clusters (K)", 2, 10, 5)
+
+    # 4. Apply K-Means
+    kmeans = KMeans(n_clusters=k, init='k-means++', random_state=42)
+    df['Cluster'] = kmeans.fit_predict(scaled_data)
+    df['Cluster'] = df['Cluster'].apply(lambda x: f"Segment {x}")
+
+    # 5. Visualizations
+    tab1, tab2, tab3 = st.tabs(["Clustering Map", "Segment Profiles", "Data View"])
+
+    with tab1:
+        st.subheader("Interactive Cluster Map")
+        pca = PCA(n_components=2)
+        pca_data = pca.fit_transform(scaled_data)
+        pca_df = pd.DataFrame(pca_data, columns=['PCA1', 'PCA2'])
+        pca_df['Cluster'] = df['Cluster']
         
-        # 2. Handle Categorical (Gender)
-        processed_df = df.copy()
-        if 'Gender' in df.columns:
-            le = LabelEncoder()
-            processed_df['Gender'] = le.fit_transform(df['Gender'])
-            if 'Gender' not in numeric_cols: numeric_cols.append('Gender')
+        fig = px.scatter(pca_df, x='PCA1', y='PCA2', color='Cluster', 
+                         title="Customer Groups in 2D Space", template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
 
-        # 3. Scaling
-        scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(processed_df[numeric_cols])
-
-        # --- CLUSTERING ---
-        st.sidebar.header("Settings")
-        k = st.sidebar.slider("Number of Clusters", 2, 10, 5)
+    with tab2:
+        st.subheader("Comparison of Segment Averages")
+        # Calculate means for each cluster
+        cluster_means = df.groupby('Cluster')[df_numeric.columns].mean().reset_index()
         
-        kmeans = KMeans(n_clusters=k, init='k-means++', random_state=42)
-        df['Cluster'] = kmeans.fit_predict(scaled_data)
-        df['Cluster'] = df['Cluster'].astype(str)
+        # Radar Chart (Spider Chart)
+        categories = df_numeric.columns.tolist()
+        fig_radar = go.Figure()
 
-        # --- VISUALIZATIONS ---
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("Cluster Distribution (PCA)")
-            pca = PCA(n_components=2)
-            components = pca.fit_transform(scaled_data)
-            fig_pca = px.scatter(components, x=0, y=1, color=df['Cluster'],
-                                 title="2D Cluster View", labels={'0': 'PCA 1', '1': 'PCA 2'})
-            st.plotly_chart(fig_pca, use_container_width=True)
-
-        with col2:
-            st.subheader("Spending vs Income")
-            if 'AnnualIncome' in df.columns and 'SpendingScore' in df.columns:
-                fig_scatter = px.scatter(df, x="AnnualIncome", y="SpendingScore", color="Cluster", 
-                                         hover_data=['Age'], title="Income vs Spending")
-                st.plotly_chart(fig_scatter, use_container_width=True)
-
-        # --- ANALYSIS INFO ---
-        st.subheader("Segment Analysis")
-        summary = df.groupby('Cluster')[numeric_cols].mean()
-        st.dataframe(summary.style.highlight_max(axis=0))
-
-        st.success(f"Analysis Complete! Found {k} distinct customer groups.")
+        for i in range(len(cluster_means)):
+            fig_radar.add_trace(go.Scatterpolar(
+                r=cluster_means.iloc[i, 1:].values,
+                theta=categories,
+                fill='toself',
+                name=cluster_means.iloc[i, 0]
+            ))
         
-        # Download button
+        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=True)
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+    with tab3:
+        st.subheader("Segmented Dataset")
+        st.dataframe(df)
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Segmented Data", csv, "segmented_customers.csv", "text/csv")
+        st.download_button("Download Full Report", data=csv, file_name="segmented_customers.csv")
 
-# Logic to switch pages
-if not st.session_state['logged_in']:
-    login_page()
 else:
-    main_app()
+    st.warning("Please upload a CSV file to see the analysis.")
